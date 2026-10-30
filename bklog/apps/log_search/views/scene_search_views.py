@@ -782,7 +782,45 @@ class SceneSearchViewSet(APIViewSet):
             filters=data.get("filters") or None,
             space_uids=space_uids,
         )
-        return Response({"dimension_key": data["dimension_key"], "values": sorted(values)})
+
+        sorted_values = sorted(values)
+
+        # cluster_id 维度额外补充 options 字段（[{id, name}] 结构）供前端下拉框展示集群名称；
+        # values 仍返回原始字符串数组保持向后兼容，其他维度（stream / namespace 等）不新增 options。
+        if data["dimension_key"] == "cluster_id" and values:
+            return Response(
+                {
+                    "dimension_key": data["dimension_key"],
+                    "values": sorted_values,
+                    "options": self._enrich_cluster_names(values),
+                }
+            )
+
+        return Response({"dimension_key": data["dimension_key"], "values": sorted_values})
+
+    @staticmethod
+    def _enrich_cluster_names(cluster_ids):
+        """为 cluster_id 列表补充集群名称，返回按 id 字典序排列的 [{id, name}] 列表。
+
+        复用 BcsApi.get_cluster_by_cluster_id 按 cluster_id 精确查询（自带 5 分钟缓存），
+        与既有 _get_bcs_cluster_name 范式一致，不依赖业务 ID，关联空间的集群也能查到名称。
+        降级策略：BCS API 调用失败或某 cluster_id 无名称时，name 回退为 cluster_id 本身，
+        保证接口不因外部依赖失败。
+        """
+        from apps.api import BcsApi
+        from apps.exceptions import ApiError
+        from apps.utils.log import logger
+
+        result = []
+        for cid in sorted(cluster_ids):
+            name = cid
+            try:
+                info = BcsApi.get_cluster_by_cluster_id({"cluster_id": cid.upper()})
+                name = info.get("clusterName") or cid
+            except ApiError:
+                logger.error("get bcs cluster name error, cluster_id: %s", cid)
+            result.append({"id": cid, "name": name})
+        return result
 
     @list_route(methods=["POST"], url_path="list_field_candidates")
     def list_field_candidates(self, request):
